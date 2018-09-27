@@ -1,0 +1,258 @@
+---
+title: "Intro_To_Leaflet_NYC"
+author: "Andrew Taylor"
+date: "September 27, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Intro
+This markdown provides an introduction to using the Rleaflet package to display geospatial data, in a pretty sweet & dynamic way. This makes use of New York zcta shape file, subset from the U.S zcta file, currently stored on the T drive in the R_Leaflet Tutorial forlder. As always, there's way more you can do than with this stuff than shown here, so always check out stackoverflow for more. Shapefiles were retrived from the Census Bureau here: https://www.census.gov/geo/maps-data/data/cbf/cbf_state.html 
+
+###Installing Required Packedges
+```{r, eval=FALSE}
+#note- if the rstudio install function fails for the leaflet packedge, as it did on my machine, you may have to use the devtools installation, below will check for both and install as needed
+
+#It might also take a really long time, like 15-20 minutes, so be patient, get some coffee, relax
+
+ifelse("leaflet" %in% rownames(installed.packages())==TRUE,library(leaflet),install.packages("leaflet"))
+ifelse("devtools" %in% rownames(installed.packages())==TRUE,library(devtools),install.packages("devtools"))
+ifelse("leaflet" %in% rownames(installed.packages())==TRUE,library(leaflet),devtools::install_github("rstudio/leaflet"))
+ifelse("rgeos" %in% rownames(installed.packages())==TRUE,library(rgeos),install.packages("rgeos"))
+ifelse("rgdal" %in% rownames(installed.packages())==TRUE,library(rgdal),install.packages("rgdal"))
+ifelse("ggmap" %in% rownames(installed.packages())==TRUE,library(ggmap),install.packages("ggmap"))
+```
+
+###Loading Required Data
+Here we read in the shape files and all other needed files. **NOTE** For whatever reason the default for windows paths is to use a "\" backslash. R can't figure this out, so just to replace object loction backslashes "\" with forward slashes "/" and then it'll work great. 
+```{r}
+#libraries in this markdown
+library(leaflet) #make the map
+library(rgeos) #read shape files
+library(rgdal) #create spatial points dataframes
+library(RColorBrewer) #make things pretty
+library(ggmap) #geocode
+
+#read the shape file
+
+#NOTE: The shape file folder has lots of files, YOU NEED ALL OF THEM IN THE SAME DIRECTORY to read in the one shape file, as they talk to eachother in the background
+
+zcta_all <- readOGR("T:/R&P/Resources/R_Leaflet_Tutorial/cb_2017_us_zcta510_500k/cb_2017_us_zcta510_500k.shp") #here we read all zctas in the U.S
+
+#read jail addresses
+Jail_Addresses <- read.csv("T:/R&P/Resources/R_Leaflet_Tutorial/R mapping exercise/Address.txt",header=FALSE,fill=TRUE)
+
+#pop counts
+pop_zcta <- read.csv("T:/R&P/Resources/R_Leaflet_Tutorial/R mapping exercise/PopZCTA.txt",header=TRUE,stringsAsFactors = FALSE)
+```
+
+###Pre processing
+Know thy data...and know that what we just read in has some frustrating syntax errors due to the format of the txt files. These are easiy resolved though. *Note* you could skip this step, but c'mon let's not be lazy.
+```{r}
+#Fixing Jail Colnames
+colnames(Jail_Addresses) #defaults because no header
+colnames(Jail_Addresses) <- c("Street_Address","State_Zip")
+Jail_Addresses$Address <- paste(Jail_Addresses$Street_Address,Jail_Addresses$State_Zip) #we want the full address, so let's put it all back together
+Jail_Addresses <- Jail_Addresses[c("Address")]
+colnames(Jail_Addresses)
+
+#Fixing Pop_ZCTA
+colnames(pop_zcta) #fix the colnames
+names <- colnames(pop_zcta) #you could do this is one step, by why bother
+names <- sub("X","",names)
+colnames(pop_zcta) <- names
+colnames(pop_zcta)
+
+#get zcta's to a column not rownames
+pop_zcta$zcta <- row.names(pop_zcta) #rownames are actually or zcta identifer, so we move them into a new col
+row.names(pop_zcta) <- NULL #and delete the vestigal identifer
+length(pop_zcta) #to quickly figure out how to move first to last below
+
+#reorder to get zcta on the left
+pop_zcta <- pop_zcta[,c(27,1:26)] 
+
+#check the str of zcta specifications (shouldn't be factor)
+str(pop_zcta$zcta)
+```
+
+###Subset Shapefiles
+Here we're going to cut the census total U.S zcta file to just NYC, using the NYC zcta population zip codes as are req for susbeting. You could probably do this all in on step but I find it easier to follow if broken out. 
+```{r}
+zctas <- c(as.character(pop_zcta$zcta)) #get a vector of NYC zctas
+zcta_all$ZCTA5CE10 <- as.character(zcta_all$ZCTA5CE10) #convert the spatial dataframe in our shapefile's list of zctas to character (defaults is factor, which will convert into an ordered list)
+NYC_zcta <- subset(zcta_all, zcta_all$ZCTA5CE10 %in% zctas) #subset 
+```
+
+We'll also do some quick pre-processing here so we can match shapefile Id's to population dataframe ids. 
+```{r}
+#renaming shapefile ID col to match population dataframe
+colnames(NYC_zcta@data)
+colnames(NYC_zcta@data) <- c("zcta","AFFGEOID10","GEOID10","ALAND10","AWATER10")
+```
+
+###Geocode Jail Addresses
+Plotting is pretty hard with just an address, and leaflet often doesn't know what to do. Fortunatley there are easy ways to get lat/longs for our Jail Data using the ggmap packedge. **NOTE** sometimes you get an error about query limits. You can register for a free api key as needed. Otherwise you share it with all of Vera and sometimes that means going way over the limit. 
+```{r}
+library(ggmap)
+Jail_Addresses <- mutate_geocode(Jail_Addresses,Address,source="dsk")
+colnames(Jail_Addresses) #adds lat & longs
+```
+
+
+###Basic of Mapping the NYU Files
+Below details the steps we want to take to map the shapefile in Rleaflet. This is the default, just showing the shapefile polygons for now. Play around with manipulating the view set and colors to get a feel for it.
+```{r}
+library(leaflet)
+library(RColorBrewer)
+
+#Map the shapefile
+NYU_Map <- leaflet(NYC_zcta) %>%
+  addTiles() %>%
+  addPolygons(color="Black", #border color
+              weight=1,
+              smoothFactor = 0.5,
+              opacity=1,
+              fillOpacity = 0.5,
+              fillColor="Blue") %>% 
+  setView(lat=40.7128,lng=-74.0060,zoom=10) #the default is zoomed out very far, so here we set it to the city center.
+
+#print the map
+NYU_Map
+```
+
+###Chloropath Mapping
+####Plotting something (anything) other than the shapfile
+Here we plot the populations from the "pop_zcta" dataframe onto the polygons from the shapefile, using the common identifer "zcta."
+  *NOTE* Ordering is an essential quality control step. If we don't order, we risk attributing values to the incorrect polygons, which not only leads to errors but can be surprisingly hard to identify as the source of the problem. It may be seem kind of pedantic, but it becomes critical once you begin to map elements from seperate dataframes, and can cause a hell of a lot of confusion.   
+*SECOND NOTE* Note how we indicate the range and pal as objects prior to using them in the syntax for the leaflet. We don't have to do that, but it makes it much easier than using the syntax to integrate the chosen ColorBrewer palette into the rest of the code. Depending on what you're doing, you might choose not do to it this way.
+```{r}
+#Order by zcta
+pop_zcta <- pop_zcta[order(pop_zcta$zcta),]
+NYC_zcta <- NYC_zcta[order(NYC_zcta$zcta),]
+
+#Create a color pallet to fill
+range <- range(pop_zcta$`2015`)
+pal <- colorNumeric(palette = "Blues",domain=range)
+
+
+#Map it
+NYC_Map <- leaflet(NYC_zcta) %>%
+  addTiles() %>%
+  addPolygons(color="grey",
+              weight=1,
+              smoothFactor = 0.5,
+              opacity=1,
+              fillOpacity = 0.75,
+              fillColor= ~pal(pop_zcta$`2015`)) %>% #color based on highest population in 2015
+  addLegend(pal=pal,values= ~pop_zcta$`2015`,title="Population") %>% #add a legend for our new color specifications
+  setView(lat=40.7128,lng=-74.0060,zoom=10)
+
+#print the map
+
+NYC_Map
+```
+
+###Fancy Chloropath Mapping
+####Adding pop-ups, hightlights, etc
+This is exactly the same as the above, but we add some of the features we expect from Tableau by default. Mess around with it, you can make it pop up whatever you like. 
+```{r}
+#Order by zcta
+pop_zcta <- pop_zcta[order(pop_zcta$zcta),]
+NYC_zcta <- NYC_zcta[order(NYC_zcta$zcta),]
+
+#Create a color pallet to fill
+range <- range(pop_zcta$`2015`)
+pal <- colorNumeric(palette = "Blues",domain=range)
+
+
+#Map it
+NYC_Map <- leaflet(NYC_zcta) %>%
+  addTiles() %>%
+  addPolygons(color="Grey",
+              weight=1,
+              smoothFactor = 0.5,
+              opacity=1,
+              fillOpacity = 0.75,
+              fillColor= ~pal(pop_zcta$`2015`),
+              highlightOptions = highlightOptions(color="white",weight=1), #add a hover highlight
+              popup = paste(round(pop_zcta$`2015`,digits=2),"people who think Andrew is the greatest")) %>% #add a pop up that shows the number of people per zip
+  addLegend(pal=pal,values= ~pop_zcta$`2015`,title="Population") %>%
+  setView(lat=40.7128,lng=-74.0060,zoom=10)
+
+#print map
+NYC_Map
+```
+
+###Adding Markers
+We want to show where the jails are right? Well how better to do so that pointing them out with hard to miss gaudy markers! 
+```{r}
+#Order by zcta
+pop_zcta <- pop_zcta[order(pop_zcta$zcta),]
+NYC_zcta <- NYC_zcta[order(NYC_zcta$zcta),]
+
+#Create a color pallet to fill
+range <- range(pop_zcta$`2015`)
+pal <- colorNumeric(palette = "Blues",domain=range)
+
+
+#Map it
+NYC_Map <- leaflet(NYC_zcta) %>%
+  addTiles() %>%
+  addPolygons(color="Grey",
+              weight=1,
+              smoothFactor = 0.5,
+              opacity=1,
+              fillOpacity = 0.75,
+              fillColor= ~pal(pop_zcta$`2015`),
+              highlightOptions = highlightOptions(color="white",weight=1),
+              popup = paste(round(pop_zcta$`2015`,digits=2),"people")) %>%
+  addMarkers(data=Jail_Addresses, #check it, there's much you can customize here but it looks profesh
+             popup = paste("Proposed Jail")) %>%
+  addLegend(pal=pal,values= ~pop_zcta$`2015`,title="Population") %>%
+  setView(lat=40.7128,lng=-74.0060,zoom=10)
+
+#print map
+NYC_Map
+```
+
+
+###Adding Circle Markers
+Suppose we want to add smaller circles, if say, we had tons of markers to show. This is more the less the same as above, but a little smaller. Not so useful here, but if you had many, many markers to plot, you can see why you would want this. 
+```{r}
+#Order by zcta
+pop_zcta <- pop_zcta[order(pop_zcta$zcta),]
+NYC_zcta <- NYC_zcta[order(NYC_zcta$zcta),]
+
+#Create a color pallet to fill
+range <- range(pop_zcta$`2015`)
+pal <- colorNumeric(palette = "Blues",domain=range)
+
+
+#Map it
+NYC_Map <- leaflet(NYC_zcta) %>%
+  addTiles() %>%
+  addPolygons(color="Grey",
+              weight=1,
+              smoothFactor = 0.5,
+              opacity=1,
+              fillOpacity = 0.75,
+              fillColor= ~pal(pop_zcta$`2015`),
+              highlightOptions = highlightOptions(color="white",weight=1),
+              popup = paste(round(pop_zcta$`2015`,digits=2),"people")) %>%
+  addCircles(data=Jail_Addresses, #adds dots, great for lots of points
+             opacity = 1,
+             weight = 5,
+             popup = paste("Proposed Jail"),
+             color= "Red",
+             fillColor = "Red",
+             fillOpacity = 1) %>%
+  addLegend(pal=pal,values= ~pop_zcta$`2015`,title="Population") %>%
+  setView(lat=40.7128,lng=-74.0060,zoom=10)
+
+#print map
+NYC_Map
+```
+
